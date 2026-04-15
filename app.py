@@ -2,145 +2,119 @@ import streamlit as st
 from openai import OpenAI
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 import os
 
-# 🔑 Groq client (FREE)
-import os
-
+# 🔑 API
 client = OpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com/openai/v1"
 )
 
+MODEL = "llama-3.1-8b-instant"
+
+# 🎨 Page config
+st.set_page_config(page_title="AI Trading Dashboard", layout="wide")
+
 # 🧠 Memory
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 🎨 UI
-st.title("🤖 AI Trading Agent")
+# 🎯 Sidebar (like Zerodha)
+st.sidebar.title("📊 Trading Panel")
+stock_symbol = st.sidebar.text_input("Enter Stock (e.g., TCS)", "TCS")
+analyze_btn = st.sidebar.button("Analyze")
 
-# 📜 Show chat history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+st.sidebar.markdown("---")
+st.sidebar.write("### 🤖 AI Assistant")
+ai_query = st.sidebar.text_input("Ask AI...")
 
-# ⌨️ Input
-user_input = st.chat_input("Ask about stocks, calculate, or chat...")
-
-# 🧮 Calculator
-def calculator(query):
-    try:
-        return str(eval(query))
-    except:
-        return "Error in calculation"
-
-# 📊 Get stock price
-def get_stock_price(symbol):
-    try:
-        stock = yf.Ticker(symbol)
-        data = stock.history(period="1d")
-        price = data["Close"].iloc[-1]
-        return price
-    except:
-        return None
-
-# 📉 RSI Calculation
-def calculate_rsi(symbol):
+# 📊 Get stock data
+def get_data(symbol):
     stock = yf.Ticker(symbol)
-    data = stock.history(period="1mo")
+    return stock.history(period="6mo")
 
+# 📉 RSI
+def compute_rsi(data):
     delta = data["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = -delta.clip(upper=0).rolling(14).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + rs))
 
-    return rsi.iloc[-1]
+# 📈 Moving Average
+def moving_avg(data):
+    return data["Close"].rolling(window=20).mean()
 
-# 🤖 LLM Chat
-def chat_llm(messages):
+# 📊 Candlestick Chart
+def plot_chart(data, symbol):
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
+        x=data.index,
+        open=data["Open"],
+        high=data["High"],
+        low=data["Low"],
+        close=data["Close"],
+        name="Candles"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=data.index,
+        y=moving_avg(data),
+        mode='lines',
+        name='MA (20)'
+    ))
+
+    fig.update_layout(title=f"{symbol} Chart", xaxis_rangeslider_visible=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+# 🤖 AI
+def chat_llm(query):
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=messages
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": "You are a trading expert. Give short and clear advice."},
+            {"role": "user", "content": query}
+        ]
     )
     return response.choices[0].message.content
 
-# 🧠 Agent Logic
-def agent(user_input):
-    user_input_lower = user_input.lower()
+# 🚀 MAIN DASHBOARD
+st.title("📊 AI Trading Dashboard (Zerodha Style)")
 
-    # 🧮 Calculator
-    if any(op in user_input for op in ["+", "-", "*", "/"]):
-        return calculator(user_input)
+if analyze_btn:
+    symbol = stock_symbol.upper() + ".NS"
+    data = get_data(symbol)
 
-    # 📊 Stock price
-    elif "price" in user_input_lower:
-        words = user_input.split()
-        for word in words:
-            if word.isupper():
-                symbol = word + ".NS"
-                price = get_stock_price(symbol)
-
-                if price:
-                    return f"📊 Current price of {word}: ₹{price:.2f}"
-                else:
-                    return "Stock not found"
-
-        return "Please provide stock symbol (e.g., TCS, INFY)"
-
-    # 📉 Stock analysis (RSI)
-    elif "analyze" in user_input_lower:
-        words = user_input.split()
-        for word in words:
-            if word.isupper():
-                symbol = word + ".NS"
-                price = get_stock_price(symbol)
-                rsi = calculate_rsi(symbol)
-
-                if price:
-                    if rsi > 70:
-                        status = "Overbought ⚠️"
-                    elif rsi < 30:
-                        status = "Oversold 🟢"
-                    else:
-                        status = "Neutral"
-
-                    return f"""
-📊 Stock: {word}
-💰 Price: ₹{price:.2f}
-📉 RSI: {rsi:.2f}
-
-📌 Interpretation: {status}
-"""
-                else:
-                    return "Stock not found"
-
-        return "Please provide stock symbol (e.g., TCS, INFY)"
-
-    # 📈 AI Stock Advice
-    elif "stock" in user_input_lower or "invest" in user_input_lower:
-        return chat_llm([
-            {"role": "system", "content": "You are a stock market expert. Give simple advice."},
-            {"role": "user", "content": user_input}
-        ])
-
-    # 🤖 Default chat
+    if data.empty:
+        st.error("Stock not found")
     else:
-        return chat_llm(st.session_state.messages + [{"role": "user", "content": user_input}])
+        price = data["Close"].iloc[-1]
+        rsi = compute_rsi(data).iloc[-1]
+        ma = moving_avg(data).iloc[-1]
 
-# 🚀 Run App
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    
-    with st.chat_message("user"):
-        st.write(user_input)
+        # Layout columns
+        col1, col2, col3 = st.columns(3)
 
-    reply = agent(user_input)
+        col1.metric("💰 Price", f"₹{price:.2f}")
+        col2.metric("📉 RSI", f"{rsi:.2f}")
+        col3.metric("📈 MA(20)", f"{ma:.2f}")
 
-    print("DEBUG:", reply)
+        # Signal
+        if rsi > 70:
+            signal = "SELL ⚠️"
+        elif rsi < 30:
+            signal = "BUY 🟢"
+        else:
+            signal = "HOLD 🤝"
 
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    
-    with st.chat_message("assistant"):
-        st.write(reply)
+        st.subheader(f"📌 Signal: {signal}")
+
+        # Chart
+        plot_chart(data, stock_symbol.upper())
+
+# 🤖 AI Assistant
+if ai_query:
+    reply = chat_llm(ai_query)
+    st.sidebar.write("💡 AI:", reply)
